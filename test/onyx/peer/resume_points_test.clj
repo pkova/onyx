@@ -60,6 +60,113 @@
 (def out-calls
   {:lifecycle/before-task-start inject-out-ch})
 
+(defn job->task-features [{:keys [catalog windows triggers lifecycles] :as job} task-id]
+  (let [task-map (first (filter (fn [{:keys [onyx/name]}]
+                                  (= task-id name))
+                                catalog))
+        task-windows (->> windows
+                          (filter (fn [{:keys [window/task]}]
+                                    (= task-id task)))
+                          (map (juxt :window/id identity))
+                          (into {}))
+        task-triggers (->> triggers
+                           (filter (fn [{:keys [trigger/window-id]}]
+                                     (get task-windows window-id)))
+                           (map (juxt :trigger/id identity))
+                           (into {}))
+        task-lifecycles (->> lifecycles
+                             (filter (fn [{:keys [lifecycle/task]}]
+                                       (= task task-id)))
+                             vec)] 
+    ;; TODO, flow conditions, will need to check for all, plus flow to and flow from?
+    {:task-id task-id
+     :task-map task-map
+     :windows task-windows
+     :lifecycles task-lifecycles
+     :triggers task-triggers}))
+
+
+(let [batch-size 1
+      workflow
+      [[:in :identity] [:identity :out]]
+
+      catalog
+      [{:onyx/name :in
+        :onyx/plugin :onyx.plugin.core-async/input
+        :onyx/type :input
+        :onyx/medium :core.async
+        :onyx/batch-size batch-size
+        :onyx/max-peers 1
+        :onyx/doc "Reads segments from a core.async channel"}
+
+       {:onyx/name :identity
+        :onyx/fn :clojure.core/identity
+        :onyx/type :function
+        :onyx/max-peers 1
+        :onyx/batch-size batch-size}
+
+       {:onyx/name :out
+        :onyx/plugin :onyx.plugin.core-async/output
+        :onyx/type :output
+        :onyx/medium :core.async
+        :onyx/batch-size batch-size
+        :onyx/max-peers 1
+        :onyx/doc "Writes segments to a core.async channel"}]
+
+      windows
+      [{:window/id :collect-segments
+        :window/task :identity
+        :window/type :global
+        :window/aggregation :onyx.windowing.aggregation/count
+        :window/window-key :event-time}]
+
+      triggers
+      [{:trigger/window-id :collect-segments
+        :trigger/refinement :onyx.refinements/accumulating
+        :trigger/on :onyx.triggers/segment
+        :trigger/id :collect-me
+        :trigger/threshold [1 :elements]
+        :trigger/sync ::update-atom!}]
+
+      lifecycles
+      [{:lifecycle/task :in
+        :lifecycle/calls ::in-calls}
+       {:lifecycle/task :out
+        :lifecycle/calls ::out-calls}]]
+
+  #_(job->task-features {:catalog catalog
+                       :workflow workflow
+                       :lifecycles lifecycles
+                       :windows windows
+                       :triggers triggers
+                       :task-scheduler :onyx.task-scheduler/balanced}
+                      :identity)
+
+  #_(merge-with (fn [t1 t2]
+                (println "T!" t1 t2)) 
+              (->> catalog
+                   (map (juxt :onyx/name identity))
+                   (into {}))
+              (->> (conj catalog
+                         {:onyx/name :out2
+                          :onyx/plugin :onyx.plugin.core-async/output
+                          :onyx/type :output
+                          :onyx/medium :core.async
+                          :onyx/batch-size batch-size
+                          :onyx/max-peers 1
+                          :onyx/doc "Writes segments to a core.async channel"}                        
+                         )
+                   (map (juxt :onyx/name identity))
+                   (into {}))
+              
+              )
+  
+
+  
+
+
+  )
+
 (deftest savepoints-test
   (let [id (random-uuid)
         config (load-config)
